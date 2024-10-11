@@ -1,0 +1,55 @@
+#Sets up Main warehouse to subscribe to MQTT topic and log updates to local SQLite DB. 
+import paho.mqtt.client as mqtt
+import json
+import sqlite3
+
+# SQLite setup for logging updates from the second warehouse
+conn = sqlite3.connect('inventory_warehouse2_logs.db')
+cursor = conn.cursor()
+
+# Create a table to store updates from the second warehouse
+cursor.execute('''CREATE TABLE IF NOT EXISTS warehouse2_inventory
+                  (barcode TEXT, product_name TEXT, quantity INTEGER, action TEXT)''')
+conn.commit()
+
+# Function to log updates to the local SQLite database
+def log_update_to_db(barcode, product_name, quantity, action):
+    cursor.execute("INSERT INTO warehouse2_inventory (barcode, product_name, quantity, action) VALUES (?, ?, ?, ?)",
+                   (barcode, product_name, quantity, action))
+    conn.commit()
+
+# MQTT client setup
+broker_url = "test.mosquitto.org"
+client = mqtt.Client()
+
+# Callback when an MQTT message is received
+def on_message(client, userdata, message):
+    print(f"Received message: {message.payload.decode()}")
+    data = json.loads(message.payload.decode())
+    
+    action = data.get("action")
+    barcode = data["data"]["barcode"]
+    product_name = data["data"]["product_name"]
+    quantity = data["data"]["quantity"]
+
+    # Log the received data to the local SQLite database
+    log_update_to_db(barcode, product_name, quantity, action)
+
+# Set up the MQTT client to subscribe to the updates from the second warehouse
+def setup_mqtt():
+    client.on_message = on_message
+    client.connect(broker_url, 1883)
+    client.subscribe("warehouse2/inventory/updates")
+    client.loop_start()
+
+if __name__ == "__main__":
+    setup_mqtt()
+
+    # Keep the script running to receive updates continuously
+    try:
+        while True:
+            pass
+    except KeyboardInterrupt:
+        print("Exiting...")
+        conn.close()
+        client.loop_stop()
