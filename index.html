@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Barcode Scanner</title>
+    <style>
+        #reader {
+            width: 100%;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        #status-message {
+            text-align: center;
+            margin-top: 10px;
+        }
+        #error-log {
+            color: red;
+            text-align: center;
+            margin-top: 10px;
+        }
+        #scan-again-button {
+            display: none;
+            margin: 20px auto;
+            padding: 10px 20px;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div id="reader"></div>
+    <div id="status-message"></div>
+    <div id="error-log"></div>
+    <button id="scan-again-button">Scan Again</button>
+
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const html5QrCode = new Html5Qrcode("reader");
+            const statusMessage = document.getElementById('status-message');
+            const errorLog = document.getElementById('error-log');
+            const scanAgainButton = document.getElementById('scan-again-button');
+
+            const config = {
+                fps: 10,
+                qrbox: 250,
+                formatsToSupport: [
+                    Html5QrcodeSupportedFormats.CODE_128,  // Code 128
+                    Html5QrcodeSupportedFormats.UPC_A,     // UPC-A (retail barcodes)
+                    Html5QrcodeSupportedFormats.EAN_13,    // EAN-13 (used internationally)
+                    Html5QrcodeSupportedFormats.EAN_8      // EAN-8 (shorter version of EAN-13)
+                ],
+                videoConstraints: { facingMode: "environment" }
+            };
+
+            function barcodeScanned(decodedText, decodedResult) {
+                console.log(`Barcode detected: ${decodedText}`);
+                statusMessage.textContent = `Barcode detected: ${decodedText}`;
+                scanAgainButton.disabled = true;
+
+                // Send the barcode to the backend
+                fetch('/scan', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ barcode: decodedText })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === "success") {
+                        statusMessage.textContent = `Barcode ${data.action} successfully: ${decodedText}`;
+                    } else {
+                        errorLog.textContent = `Error: ${data.error}`;
+                    }
+                    scanAgainButton.disabled = false;
+                    scanAgainButton.style.display = 'block';
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    errorLog.textContent = 'Error sending barcode: ' + error;
+                    scanAgainButton.disabled = false;
+                    scanAgainButton.style.display = 'block';
+                });
+            }
+
+            html5QrCode.start(
+                { facingMode: "environment" },
+                config,
+                barcodeScanned
+            ).catch(err => {
+                errorLog.textContent = 'Error starting scanner: ' + err;
+            });
+
+            // Logic for restarting scanner using the "Scan Again" button
+            scanAgainButton.addEventListener('click', function () {
+                statusMessage.textContent = '';
+                errorLog.textContent = '';
+                scanAgainButton.style.display = 'none';
+                html5QrCode.start({ facingMode: "environment" }, config, barcodeScanned);
+            });
+        });
+    </script>
+</body>
+</html>
