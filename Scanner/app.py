@@ -2,13 +2,19 @@ import os
 import sys
 import time
 import logging
-import json  # For handling JSON with MQTT
+import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from sqlalchemy import create_engine, Column, String, Integer, event, text
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
 from sqlalchemy.exc import SQLAlchemyError
-import paho.mqtt.client as mqtt  # MQTT library
+import paho.mqtt.client as mqtt
+import dash
+from dash import Dash, dcc, html, dash_table
+import dash_bootstrap_components as dbc
+from dash.dependencies import Input, Output, State
+import dash_auth
+import sqlite3
 
 # Initialize the Flask app
 app = Flask(__name__)
@@ -80,45 +86,171 @@ def publish_to_mqtt(action, data):
     if result.rc != mqtt.MQTT_ERR_SUCCESS:
         app.logger.error(f"Failed to publish MQTT message: {result.rc}")
 
-# Barcode to product name mapping (mapping based on the first 11 characters)
+# Updated barcode to product name mapping with new 6-digit prefixes
 barcode_prefix_mapping = {
-    '71013487523': 'Alex Silver',                 # Alex Silver
-    '71011154523': 'Newport Silver',              # Newport Silver
-    '71011153523': 'Newport White and Pink',      # Newport White and Pink
-    '71011156522': 'Newport Copper',              # Newport Copper
-    '71011155523': 'Newport White and Gold',      # Newport White and Gold
-    '71075750522': 'Newport Gunmetal',            # Newport Gunmetal
-    '71014181523': 'Newport Blue',                # Newport Blue
-    '71011151522': 'Newport Ebony and Gold',      # Newport Ebony and Gold
-    '71011171523': 'Treemont Blue and Silver',    # Treemont Blue and Silver
-    '71011168523': 'Treemont Copper',             # Treemont Copper
-    '71063883523': 'Thomas Silver',               # Thomas Silver
-    '71085172523': 'Heritage Blue',               # Heritage Blue
-    '71075675523': 'Albany Grey',                 # Albany Grey
-    '71070314522': 'Emperor 27 White & Pink',     # Emperor 27 White & Pink
-    '71070313523': 'Emperor 27 Blue',             # Emperor 27 Blue
-    '71011119521': 'Emperor 27 Copper',           # Emperor 27 Copper
-    '71011117523': 'Emperor 27 Silver',           # Emperor 27 Silver
+    '71013487523': 'Alex Silver',
+    '71011154523': 'Newport Silver',
+    '71011153523': 'Newport White and Pink',
+    '71011156522': 'Newport Copper',
+    '71011155523': 'Newport White and Gold',
+    '71075750522': 'Newport Gunmetal',
+    '71014181553': 'Newport Blue',
+    '71011151522': 'Newport Ebony and Gold',
+    '110481': 'Brighton Natural',
+    '210477': 'Silver Rose',
+    '210889': 'Classic Ebony Gold',
+    '110649': '#430',
+    '110128': 'Masterpiece',
+    '410204': "In God's Care",
+    '210923': 'Dartmouth Blue',
+    '210654': 'Roseboro',
+    '210921': 'Dartmouth Bronze',
+    '210953': 'Kessens Bronze',
+    '110411': 'Nordon Pine',
+    '110664': '#435',
+    '210937': 'Kessens Grey',
 }
 
-# List of known internal commands to filter out
-internal_commands = [
-    "Inventory Mode",
-    "Data Upload (For Inventory Mode Only)",
-    "Enter Setup",
-    "(*)Wireless Adapter Mode",
-    "Exit and Save",
-    "/*SetFun84*/",  # Add this specific command to your filter
-    # Add more internal commands if needed
-]
+# Helper function to get inventory from the database
+def get_inventory_from_db():
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT product_name, quantity FROM inventory")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"product_name": row[0], "quantity": row[1]} for row in rows]
+
+# Initialize Dash app
+dash_app = Dash(__name__, server=app, external_stylesheets=[dbc.themes.LITERA])
+
+# List of valid username/password pairs
+VALID_USERNAME_PASSWORD_PAIRS = {
+    'user1': 'password1',
+    'admin': 'admin123'
+}
+
+# Apply authentication only for external requests
+@dash_app.server.before_request
+def apply_authentication():
+    if not (request.remote_addr.startswith('192.168.') or request.remote_addr == '127.0.0.1'):
+        auth = dash_auth.BasicAuth(
+            dash_app,
+            VALID_USERNAME_PASSWORD_PAIRS
+        )
+
+# Layout for the Dash app
+dash_app.layout = dbc.Container([
+    dbc.Row([
+        dbc.Col(html.H1("Service Casket Dashboard", style={'color': 'darkblue'}), width=12)
+    ], justify="center"),
+
+    # Add Home Button
+    dbc.Row([
+        dbc.Col([
+            html.Button("Home", id='home-button', n_clicks=0, className='btn btn-primary')
+        ], width=1),
+    ], justify="start", style={'marginTop': '20px'}),
+
+    # Search bar for caskets
+    dbc.Row([
+        dbc.Col([
+            dcc.Input(
+                id='inventory-search',
+                type='text',
+                placeholder='Search by product name...',
+                debounce=True,
+                style={'width': '100%'}
+            ),
+        ], width=6),
+    ], justify="start", style={'marginTop': '20px'}),
+
+    # Adjusted DataTable placement and width
+    dbc.Row([
+        dbc.Col([
+            dash_table.DataTable(
+                id='inventory-table',
+                columns=[
+                    {"name": "Product Name", "id": "product_name"},
+                    {"name": "Quantity", "id": "quantity", "editable": True},
+                ],
+                data=get_inventory_from_db(),  # Load data initially
+                style_data_conditional=[
+                    {
+                        'if': {
+                            'filter_query': '{quantity} < 2',
+                            'column_id': 'quantity'
+                        },
+                        'backgroundColor': 'tomato',
+                        'color': 'white',
+                    },
+                ],
+                editable=True,
+                style_cell={'textAlign': 'left'},
+                style_table={'width': '100%'},
+                style_cell_conditional=[
+                    {'if': {'column_id': 'product_name'}, 'width': '70%'},
+                    {'if': {'column_id': 'quantity'}, 'width': '30%'},
+                ],
+            )
+        ], width=6),  # Adjusted width to 6 out of 12 columns (half the screen)
+    ], justify="start"),
+], fluid=True)
+
+# Callback to update the inventory table and save changes
+@dash_app.callback(
+    Output('inventory-table', 'data'),
+    Input('inventory-search', 'value'),
+    Input('inventory-table', 'data_timestamp'),
+    Input('home-button', 'n_clicks'),
+    State('inventory-table', 'data'),
+)
+def update_table(search_value, timestamp, home_clicks, rows):
+    ctx = dash.callback_context
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+
+    if triggered_id == 'inventory-search':
+        # Fetch data from database and filter based on search
+        inventory = get_inventory_from_db()
+
+        if search_value:
+            filtered_inventory = [item for item in inventory if search_value.lower() in item['product_name'].lower()]
+        else:
+            filtered_inventory = inventory
+
+        return filtered_inventory
+
+    elif triggered_id == 'inventory-table':
+        # Save changes to the database
+        if rows:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+
+            for row in rows:
+                cursor.execute(
+                    "UPDATE inventory SET quantity = ? WHERE product_name = ?",
+                    (row['quantity'], row['product_name'])
+                )
+
+            conn.commit()
+            conn.close()
+
+        # Return the updated data
+        return rows
+
+    elif triggered_id == 'home-button':
+        # Reset the search input and display full inventory
+        return get_inventory_from_db()
+
+    else:
+        # Initial load or other triggers
+        return get_inventory_from_db()
 
 # Function to add or update inventory with retry mechanism for handling database locks
 def add_or_update_inventory(session, scanned_barcode):
     retry_count = 5  # Retry up to 5 times if the database is locked
     delay = 0.5      # Delay between retries
 
-    # Filter out known internal commands
-    if scanned_barcode in internal_commands:
+    if scanned_barcode in ["Inventory Mode", "Exit and Save"]:
         app.logger.debug(f"Internal command detected: {scanned_barcode}. Skipping.")
         return 'skipped'
 
@@ -127,15 +259,20 @@ def add_or_update_inventory(session, scanned_barcode):
             # Start an IMMEDIATE transaction to prevent further database locks
             session.execute(text('BEGIN IMMEDIATE'))
 
-            # Clean up the barcode and extract the prefix
-            scanned_barcode = scanned_barcode.strip()     # Remove extra whitespace
-            barcode_prefix = scanned_barcode[:11]         # Get the first 11 characters
+            # Clean up the barcode
+            scanned_barcode = scanned_barcode.strip()  # Remove extra whitespace
 
-            app.logger.debug(f"Scanned barcode: {scanned_barcode}, Prefix: {barcode_prefix}")
+            # Determine barcode format and extract prefix
+            if len(scanned_barcode) >= 14 and '-' in scanned_barcode:
+                # Handle 14-character barcode with hyphen
+                barcode_prefix = scanned_barcode.split('-')[0]
+            else:
+                # Handle 11-character or 6-character barcode
+                barcode_prefix = scanned_barcode[:11] if len(scanned_barcode) >= 11 else scanned_barcode[:6]
 
-            # Ensure product_name is always assigned, even if the prefix is not found
             product_name = barcode_prefix_mapping.get(barcode_prefix, 'Unknown')
 
+            app.logger.debug(f"Scanned barcode: {scanned_barcode}, Prefix: {barcode_prefix}")
             app.logger.debug(f"Mapped product name: {product_name}")
 
             # Check if the barcode already exists in the inventory
@@ -144,8 +281,7 @@ def add_or_update_inventory(session, scanned_barcode):
             if existing_barcode_item:
                 # Increment the quantity since the barcode exists
                 existing_barcode_item.quantity += 1
-                app.logger.debug(f"Incremented quantity for {product_name}. New quantity: {existing_barcode_item.quantity}")
-                item = existing_barcode_item  # Assign existing item to 'item'
+                item = existing_barcode_item
                 action = 'updated'
             else:
                 # Check if the product_name already exists in the inventory
@@ -154,19 +290,17 @@ def add_or_update_inventory(session, scanned_barcode):
                 if item:
                     # If the product already exists, increment the quantity
                     item.quantity += 1
-                    app.logger.debug(f"Updated inventory for {product_name}. New quantity: {item.quantity}")
                     # Update the barcode for this item
                     item.barcode = scanned_barcode
                     action = 'updated'
                 else:
                     # If it doesn't exist, add it with an initial quantity of 1
                     item = Inventory(
-                        barcode=scanned_barcode,  # Store the full barcode
-                        product_name=product_name,  # Store the mapped product name or 'Unknown'
+                        barcode=scanned_barcode,
+                        product_name=product_name,
                         quantity=1
                     )
                     session.add(item)
-                    app.logger.debug(f"Added new item to inventory: {product_name}")
                     action = 'added'
 
             # Commit the changes to the database
@@ -175,8 +309,8 @@ def add_or_update_inventory(session, scanned_barcode):
             # Publish update to MQTT
             publish_to_mqtt(action, {
                 "barcode": scanned_barcode,
-                "product_name": product_name,   # Include the product name in the MQTT message
-                "quantity": item.quantity       # Use item's quantity
+                "product_name": product_name,
+                "quantity": item.quantity
             })
 
             return action
@@ -206,21 +340,15 @@ def add_or_update_inventory(session, scanned_barcode):
 def scan():
     session = Session()
     try:
-        app.logger.info('Received request at /scan')
         data = request.get_json()
-        app.logger.debug(f"Request data: {data}")
-
         barcode_data = data.get('barcode')
-        app.logger.debug(f"Barcode data: {barcode_data}")
 
         if not barcode_data or not isinstance(barcode_data, str):
-            app.logger.warning('Invalid barcode data provided in the request.')
             return jsonify({"error": "Invalid barcode provided."}), 400
 
         # Add or update inventory using the barcode
         action = add_or_update_inventory(session, barcode_data)
 
-        app.logger.info(f'Barcode processing complete. Action: {action}')
         return jsonify({"status": "success", "action": action}), 200
 
     except SQLAlchemyError as e:
@@ -232,10 +360,10 @@ def scan():
     finally:
         session.close()
 
-# Start the Flask app
+# Run the Flask and Dash app together
 if __name__ == '__main__':
-    app.logger.debug("Starting Flask app with MQTT support")
+    app.logger.debug("Starting Flask and Dash app with MQTT support")
     try:
-        app.run(host='0.0.0.0', port=5000, debug=True)
+        dash_app.run_server(host='0.0.0.0', port=5000, debug=True)
     except Exception as e:
-        app.logger.error(f"Error starting Flask app: {str(e)}")
+        app.logger.error(f"Error starting app: {str(e)}")
