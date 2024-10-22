@@ -3,6 +3,7 @@ import sys
 import time
 import logging
 import json
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from sqlalchemy import create_engine, Column, String, Integer, event, text
@@ -13,7 +14,6 @@ import dash
 from dash import Dash, dcc, html, dash_table
 import dash_bootstrap_components as dbc
 from dash.dependencies import Input, Output, State, ALL
-import dash_auth
 import sqlite3
 
 # Initialize the Flask app
@@ -58,7 +58,16 @@ class Inventory(Base):
     product_name = Column(String)  # Product name mapped from barcode
     quantity = Column(Integer, default=1)
 
-# Create the table (if not exists)
+# Define the Purchase model to track purchases
+class Purchase(Base):
+    __tablename__ = 'purchase'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    customer = Column(String, nullable=False)
+    product_name = Column(String, nullable=False)
+    quantity = Column(Integer, nullable=False)
+    date_purchased = Column(String, default=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+# Create the tables (if not exist)
 Base.metadata.create_all(engine)
 
 # Create a scoped session
@@ -120,6 +129,29 @@ def get_inventory_from_db():
     conn.close()
     return [{"product_name": row[0], "quantity": row[1]} for row in rows]
 
+# Helper function to get recent purchases from the database
+def get_recent_purchases_from_db():
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT customer, product_name, quantity, date_purchased
+        FROM purchase
+        WHERE date_purchased >= date('now', '-30 days')
+        ORDER BY date_purchased DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"customer": row[0], "product_name": row[1], "quantity": row[2], "date_purchased": row[3]} for row in rows]
+
+# Helper function to get stock alerts from the database
+def get_stock_alerts_from_db():
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT product_name, quantity FROM inventory WHERE quantity <= 2")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"product_name": row[0], "quantity": row[1]} for row in rows]
+
 # Initialize Dash app
 dash_app = Dash(
     __name__,
@@ -128,22 +160,7 @@ dash_app = Dash(
     suppress_callback_exceptions=True  # Suppress exceptions for components not in initial layout
 )
 
-# List of valid username/password pairs
-VALID_USERNAME_PASSWORD_PAIRS = {
-    'user1': 'password1',
-    'admin': 'admin123'
-}
-
-# Apply authentication only for external requests
-@dash_app.server.before_request
-def apply_authentication():
-    if not (request.remote_addr.startswith('192.168.') or request.remote_addr == '127.0.0.1'):
-        auth = dash_auth.BasicAuth(
-            dash_app,
-            VALID_USERNAME_PASSWORD_PAIRS
-        )
-
-# Customer options from the image (sorted alphabetically)
+# Customer options for the dropdown menu
 customer_options = [
     {'label': 'A.S. TURNER & SON FUNERAL HOME', 'value': 'A.S. TURNER & SON FUNERAL HOME'},
     {'label': 'ABBEY FUNERAL HOME', 'value': 'ABBEY FUNERAL HOME'},
@@ -509,7 +526,6 @@ customer_options = [
     {'label': 'WIMBERLY FUNERAL HOME', 'value': 'WIMBERLY FUNERAL HOME'},
     {'label': 'WINNS FUNERAL HOME', 'value': 'WINNS FUNERAL HOME'}
 ]
-
 # Application layout with navigation
 dash_app.layout = html.Div([
     dcc.Location(id='url', refresh=False),
@@ -517,6 +533,8 @@ dash_app.layout = html.Div([
         children=[
             dbc.NavItem(dbc.NavLink("Home", href="/")),
             dbc.NavItem(dbc.NavLink("Orders", href="/orders")),
+            dbc.NavItem(dbc.NavLink("Recent Purchases", href="/recent-purchases")),
+            dbc.NavItem(dbc.NavLink("Stock Alerts", href="/stock-alerts")),
         ],
         brand="Service Casket Dashboard",
         brand_href="/",
@@ -524,8 +542,8 @@ dash_app.layout = html.Div([
         dark=True,
     ),
     html.Div(id='page-content'),
-    # Hidden div for clientside callback
-    html.Div(id='dummy-output', style={'display': 'none'}),
+    html.Div(id='inventory-update-output', style={'display': 'none'}),
+    html.Div(id='print-output', style={'display': 'none'}),
 ])
 
 # Home Page Layout
@@ -572,7 +590,7 @@ def home_layout():
                         {'if': {'column_id': 'quantity'}, 'width': '30%'},
                     ],
                 )
-            ], width=6),  # Adjusted width to 6 out of 12 columns (half the screen)
+            ], width=6),
         ], justify="start"),
     ], fluid=True)
 
@@ -619,22 +637,13 @@ def orders_layout():
             ], width=6),
         ], justify="start", style={'marginTop': '20px'}),
 
-        # Order confirmation message
+        # Order confirmation message and order summary
         dbc.Row([
             dbc.Col([
-                html.Div(id='order-confirmation', style={'marginTop': '20px'})
-            ], width=6),
-        ], justify="start"),
-
-        # Order summary display
-        dbc.Row([
-            dbc.Col([
-                html.Div(id='order-summary', style={'marginTop': '20px'})
+                html.Div(id='order-confirmation', style={'marginTop': '20px'}),
+                html.Div(id='order-summary', style={'marginTop': '20px'}),
             ], width=12),
         ], justify="start"),
-
-        # Hidden div for clientside callback
-        html.Div(id='dummy-output', style={'display': 'none'}),
     ], fluid=True)
 
 def create_order_item(index, casket_options):
@@ -662,14 +671,68 @@ def create_order_item(index, casket_options):
         ], justify="start", style={'marginTop': '10px'}),
     ], id={'type': 'order-item', 'index': index})
 
-# Update the page content based on the URL
-@dash_app.callback(Output('page-content', 'children'),
-                   [Input('url', 'pathname')])
-def display_page(pathname):
-    if pathname == '/orders':
-        return orders_layout()
-    else:
-        return home_layout()
+# Callback to handle order confirmation
+@dash_app.callback(
+    Output('order-confirmation', 'children'),
+    Input('confirm-order-button', 'n_clicks'),
+    State('customer-dropdown', 'value'),
+    State({'type': 'casket-dropdown', 'index': ALL}, 'value'),
+    State({'type': 'quantity-input', 'index': ALL}, 'value'),
+)
+def confirm_order(n_clicks, customer, casket_list, quantity_list):
+    if n_clicks > 0:
+        if not customer:
+            return dbc.Alert("Please select a customer.", color="danger")
+
+        # Prepare list of items to process
+        order_items = []
+        for idx, (casket_name, quantity) in enumerate(zip(casket_list, quantity_list)):
+            if casket_name and quantity:
+                if quantity <= 0:
+                    return dbc.Alert(f"Please enter a valid quantity for item {idx + 1}.", color="danger")
+                order_items.append({'casket': casket_name, 'quantity': quantity})
+            elif casket_name or quantity:
+                return dbc.Alert(f"Please complete both casket and quantity fields for item {idx + 1}, or leave both empty.", color="danger")
+
+        if not order_items:
+            return dbc.Alert("Please select at least one casket and quantity to place an order.", color="danger")
+
+        # Process the order
+        session = Session()
+        try:
+            for item in order_items:
+                casket_name = item['casket']
+                quantity = item['quantity']
+                # Fetch the inventory item
+                inventory_item = session.query(Inventory).filter_by(product_name=casket_name).first()
+                if inventory_item:
+                    if inventory_item.quantity >= quantity:
+                        # Subtract the quantity
+                        inventory_item.quantity -= quantity
+
+                        # Add the purchase to the 'purchase' table
+                        purchase = Purchase(
+                            customer=customer,
+                            product_name=casket_name,
+                            quantity=quantity,
+                            date_purchased=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        )
+                        session.add(purchase)
+                    else:
+                        return dbc.Alert(f"Insufficient stock for {casket_name}. Available: {inventory_item.quantity}", color="danger")
+                else:
+                    return dbc.Alert(f"Casket {casket_name} not found in inventory.", color="danger")
+
+            session.commit()
+            # Display success message
+            return dbc.Alert("Order confirmed successfully!", color="success")
+        except Exception as e:
+            session.rollback()
+            app.logger.error(f"Error processing order: {str(e)}")
+            return dbc.Alert("An error occurred while processing the order.", color="danger")
+        finally:
+            session.close()
+    return ""
 
 # Callback to handle adding new order items
 @dash_app.callback(
@@ -684,59 +747,6 @@ def add_order_item(n_clicks, children):
     children.append(new_item)
     return children
 
-# Callback to handle order confirmation
-@dash_app.callback(
-    Output('order-confirmation', 'children'),
-    Input('confirm-order-button', 'n_clicks'),
-    State('customer-dropdown', 'value'),
-    State({'type': 'casket-dropdown', 'index': ALL}, 'value'),
-    State({'type': 'quantity-input', 'index': ALL}, 'value'),
-)
-def confirm_order(n_clicks, customer, casket_list, quantity_list):
-    if n_clicks > 0:
-        if not customer:
-            return dbc.Alert("Please select a customer.", color="danger")
-        
-        # Prepare list of items to process
-        order_items = []
-        for idx, (casket_name, quantity) in enumerate(zip(casket_list, quantity_list)):
-            if casket_name and quantity:
-                if quantity <= 0:
-                    return dbc.Alert(f"Please enter a valid quantity for item {idx + 1}.", color="danger")
-                order_items.append({'casket': casket_name, 'quantity': quantity})
-            elif casket_name or quantity:
-                return dbc.Alert(f"Please complete both casket and quantity fields for item {idx + 1}, or leave both empty.", color="danger")
-        
-        if not order_items:
-            return dbc.Alert("Please select at least one casket and quantity to place an order.", color="danger")
-        
-        # Process the order
-        session = Session()
-        try:
-            for item in order_items:
-                casket_name = item['casket']
-                quantity = item['quantity']
-                # Fetch the inventory item
-                inventory_item = session.query(Inventory).filter_by(product_name=casket_name).first()
-                if inventory_item:
-                    if inventory_item.quantity >= quantity:
-                        # Subtract the quantity
-                        inventory_item.quantity -= quantity
-                    else:
-                        return dbc.Alert(f"Insufficient stock for {casket_name}. Available: {inventory_item.quantity}", color="danger")
-                else:
-                    return dbc.Alert(f"Casket {casket_name} not found in inventory.", color="danger")
-            session.commit()
-            # Display success message
-            return dbc.Alert("Order confirmed successfully!", color="success")
-        except Exception as e:
-            session.rollback()
-            app.logger.error(f"Error processing order: {str(e)}")
-            return dbc.Alert("An error occurred while processing the order.", color="danger")
-        finally:
-            session.close()
-    return ""
-
 # Callback to generate and display the order summary
 @dash_app.callback(
     Output('order-summary', 'children'),
@@ -749,7 +759,7 @@ def display_order_summary(n_clicks, customer, casket_list, quantity_list):
     if n_clicks > 0:
         if not customer:
             return dbc.Alert("Please select a customer.", color="danger")
-        
+
         # Prepare list of items to include in the summary
         order_items = []
         for idx, (casket_name, quantity) in enumerate(zip(casket_list, quantity_list)):
@@ -759,10 +769,10 @@ def display_order_summary(n_clicks, customer, casket_list, quantity_list):
                 order_items.append({'casket': casket_name, 'quantity': quantity})
             elif casket_name or quantity:
                 return dbc.Alert(f"Please complete both casket and quantity fields for item {idx + 1}, or leave both empty.", color="danger")
-        
+
         if not order_items:
             return dbc.Alert("Please select at least one casket and quantity to generate an order summary.", color="danger")
-        
+
         # Generate order summary
         order_summary = html.Div([
             html.H4("Order Summary"),
@@ -783,168 +793,124 @@ dash_app.clientside_callback(
         return '';
     }
     """,
-    Output('dummy-output', 'children'),
+    Output('print-output', 'children'),
     Input('print-button', 'n_clicks')
 )
 
-# Callback to update the inventory table on the Home page
-@dash_app.callback(
-    Output('inventory-table', 'data'),
-    [Input('inventory-search', 'value'),
-     Input('inventory-table', 'data_timestamp')],
-    [State('inventory-table', 'data')],
-)
-def update_inventory_table(search_value, timestamp, rows):
-    ctx = dash.callback_context
-    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+# Recent Purchases Page Layout
+def recent_purchases_layout():
+    recent_purchases = get_recent_purchases_from_db()
 
-    if triggered_id == 'inventory-search':
-        # Fetch data from database and filter based on search
-        inventory = get_inventory_from_db()
+    return dbc.Container([
+        dbc.Row([
+            dbc.Col(html.H2("Recent Purchases"), width=12)
+        ], justify="start", style={'marginTop': '20px'}),
 
-        if search_value:
-            filtered_inventory = [item for item in inventory if search_value.lower() in item['product_name'].lower()]
-        else:
-            filtered_inventory = inventory
-
-        return filtered_inventory
-
-    elif triggered_id == 'inventory-table':
-        # Save changes to the database
-        if rows:
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-
-            for row in rows:
-                cursor.execute(
-                    "UPDATE inventory SET quantity = ? WHERE product_name = ?",
-                    (row['quantity'], row['product_name'])
+        dbc.Row([
+            dbc.Col([
+                dash_table.DataTable(
+                    id='recent-purchases-table',
+                    columns=[
+                        {"name": "Customer", "id": "customer"},
+                        {"name": "Product Name", "id": "product_name"},
+                        {"name": "Quantity", "id": "quantity"},
+                        {"name": "Date Purchased", "id": "date_purchased"},
+                    ],
+                    data=recent_purchases,
+                    style_cell={'textAlign': 'left'},
+                    style_table={'width': '100%'},
+                    style_data_conditional=[{
+                        'if': {
+                            'row_index': 'odd'
+                        },
+                        'backgroundColor': 'rgb(248, 248, 248)'
+                    }],
+                    style_as_list_view=True,
                 )
+            ], width=12),
+        ], justify="start", style={'marginTop': '20px'}),
+    ], fluid=True)
 
-            conn.commit()
-            conn.close()
+# Stock Alerts Page Layout
+def stock_alerts_layout():
+    stock_alerts = get_stock_alerts_from_db()
 
-        # Return the updated data
-        return rows
+    return dbc.Container([
+        dbc.Row([
+            dbc.Col(html.H2("Stock Alerts"), width=12)
+        ], justify="start", style={'marginTop': '20px'}),
 
+        dbc.Row([
+            dbc.Col([
+                dash_table.DataTable(
+                    id='stock-alerts-table',
+                    columns=[
+                        {"name": "Product Name", "id": "product_name"},
+                        {"name": "Quantity", "id": "quantity"},
+                    ],
+                    data=stock_alerts,
+                    style_data_conditional=[
+                        {
+                            'if': {
+                                'filter_query': '{quantity} < 2',
+                                'column_id': 'quantity'
+                            },
+                            'backgroundColor': 'tomato',
+                            'color': 'white',
+                        },
+                    ],
+                    style_cell={'textAlign': 'left'},
+                    style_table={'width': '100%'},
+                    style_cell_conditional=[
+                        {'if': {'column_id': 'product_name'}, 'width': '70%'},
+                        {'if': {'column_id': 'quantity'}, 'width': '30%'},
+                    ],
+                )
+            ], width=6),
+        ], justify="start"),
+    ], fluid=True)
+
+# Update the page content based on the URL
+@dash_app.callback(Output('page-content', 'children'),
+                   [Input('url', 'pathname')])
+def display_page(pathname):
+    if pathname == '/orders':
+        return orders_layout()
+    elif pathname == '/recent-purchases':
+        return recent_purchases_layout()
+    elif pathname == '/stock-alerts':
+        return stock_alerts_layout()
     else:
-        # Initial load or other triggers
-        return get_inventory_from_db()
+        return home_layout()
 
-# Function to add or update inventory with retry mechanism for handling database locks
-def add_or_update_inventory(session, scanned_barcode):
-    retry_count = 5  # Retry up to 5 times if the database is locked
-    delay = 0.5      # Delay between retries
-
-    if scanned_barcode in ["Inventory Mode", "Exit and Save"]:
-        app.logger.debug(f"Internal command detected: {scanned_barcode}. Skipping.")
-        return 'skipped'
-
-    for attempt in range(retry_count):
+# Callback to handle inventory updates when quantity is edited
+@dash_app.callback(
+    Output('inventory-update-output', 'children'),
+    Input('inventory-table', 'data'),
+    State('inventory-table', 'data_previous')
+)
+def update_inventory(data, data_previous):
+    if data_previous is None:
+        # First call, no changes
+        raise dash.exceptions.PreventUpdate
+    else:
+        session = Session()
         try:
-            # Start an IMMEDIATE transaction to prevent further database locks
-            session.execute(text('BEGIN IMMEDIATE'))
-
-            # Clean up the barcode
-            scanned_barcode = scanned_barcode.strip()  # Remove extra whitespace
-
-            # Determine barcode format and extract prefix
-            if len(scanned_barcode) >= 14 and '-' in scanned_barcode:
-                # Handle 14-character barcode with hyphen
-                barcode_prefix = scanned_barcode.split('-')[0]
-            else:
-                # Handle 11-character or 6-character barcode
-                barcode_prefix = scanned_barcode[:11] if len(scanned_barcode) >= 11 else scanned_barcode[:6]
-
-            product_name = barcode_prefix_mapping.get(barcode_prefix, 'Unknown')
-
-            app.logger.debug(f"Scanned barcode: {scanned_barcode}, Prefix: {barcode_prefix}")
-            app.logger.debug(f"Mapped product name: {product_name}")
-
-            # Check if the barcode already exists in the inventory
-            existing_barcode_item = session.query(Inventory).filter_by(barcode=scanned_barcode).first()
-
-            if existing_barcode_item:
-                # Increment the quantity since the barcode exists
-                existing_barcode_item.quantity += 1
-                item = existing_barcode_item
-                action = 'updated'
-            else:
-                # Check if the product_name already exists in the inventory
-                item = session.query(Inventory).filter_by(product_name=product_name).first()
-
-                if item:
-                    # If the product already exists, increment the quantity
-                    item.quantity += 1
-                    # Update the barcode for this item
-                    item.barcode = scanned_barcode
-                    action = 'updated'
-                else:
-                    # If it doesn't exist, add it with an initial quantity of 1
-                    item = Inventory(
-                        barcode=scanned_barcode,
-                        product_name=product_name,
-                        quantity=1
-                    )
-                    session.add(item)
-                    action = 'added'
-
-            # Commit the changes to the database
+            for row, previous_row in zip(data, data_previous):
+                if row['quantity'] != previous_row['quantity']:
+                    product_name = row['product_name']
+                    new_quantity = row['quantity']
+                    # Update the database
+                    inventory_item = session.query(Inventory).filter_by(product_name=product_name).first()
+                    if inventory_item:
+                        inventory_item.quantity = new_quantity
             session.commit()
-
-            # Publish update to MQTT
-            publish_to_mqtt(action, {
-                "barcode": scanned_barcode,
-                "product_name": product_name,
-                "quantity": item.quantity
-            })
-
-            return action
-
-        except SQLAlchemyError as e:
-            session.rollback()
-            if "database is locked" in str(e):
-                app.logger.warning(
-                    f"Database is locked, retrying in {delay} seconds... (Attempt {attempt + 1}/{retry_count})"
-                )
-                time.sleep(delay)
-                continue
-            else:
-                app.logger.error(f"Database error: {str(e)}")
-                raise
         except Exception as e:
             session.rollback()
-            app.logger.error(f"Error processing barcode: {str(e)}")
-            raise
+            app.logger.error(f"Error updating inventory: {str(e)}")
         finally:
             session.close()
-
-    raise Exception("Failed to update inventory after multiple attempts due to database lock.")
-
-# Endpoint to handle barcode scanning
-@app.route('/scan', methods=['POST'])
-def scan():
-    session = Session()
-    try:
-        data = request.get_json()
-        barcode_data = data.get('barcode')
-
-        if not barcode_data or not isinstance(barcode_data, str):
-            return jsonify({"error": "Invalid barcode provided."}), 400
-
-        # Add or update inventory using the barcode
-        action = add_or_update_inventory(session, barcode_data)
-
-        return jsonify({"status": "success", "action": action}), 200
-
-    except SQLAlchemyError as e:
-        app.logger.error("Database error:", exc_info=True)
-        return jsonify({"error": "Database error occurred.", "details": str(e)}), 500
-    except Exception as e:
-        app.logger.error("Error processing request:", exc_info=True)
-        return jsonify({"error": "An error occurred while processing the request.", "details": str(e)}), 500
-    finally:
-        session.close()
+    return ''
 
 # Run the Flask and Dash app together
 if __name__ == '__main__':
