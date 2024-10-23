@@ -786,6 +786,29 @@ def orders_layout():
         ], justify="start"),
     ], fluid=True)
 
+@dash_app.callback(
+    Output('customer-dropdown', 'options'),
+    Input('url', 'pathname')
+)
+def update_customer_dropdown():
+    session = Session()
+    try:
+        # Get customers from CustomerInfo table
+        db_customers = [row[0].upper() for row in session.query(CustomerInfo.customer_name).all()]
+        
+        # Get predefined customer options (they're already in uppercase)
+        predefined_customers = [opt['value'] for opt in customer_options]
+        
+        # Combine both lists and remove duplicates
+        all_customers = sorted(set(predefined_customers) | set(db_customers))
+        
+        # Create options list with consistent uppercase
+        combined_options = [{'label': name, 'value': name} for name in all_customers]
+        
+        return combined_options
+    finally:
+        session.close()
+
 def create_order_item(index, casket_options):
     return html.Div([
         dbc.Row([
@@ -1291,39 +1314,143 @@ def confirm_order(n_clicks, customer, casket_list, quantity_list):
 def display_order_summary(n_clicks, customer, casket_list, quantity_list):
     if n_clicks > 0:
         if not customer:
-            logger.debug("No customer selected for summary.")
             return dbc.Alert("Please select a customer.", color="danger")
 
-        # Prepare list of items to include in the summary
-        order_items = []
-        for idx, (casket_name, quantity) in enumerate(zip(casket_list, quantity_list)):
-            if casket_name and quantity:
-                if quantity <= 0:
-                    logger.debug(f"Invalid quantity for summary item {idx + 1}: {quantity}")
-                    return dbc.Alert(f"Please enter a valid quantity for item {idx + 1}.", color="danger")
-                order_items.append({'casket': casket_name, 'quantity': quantity})
-            elif casket_name or quantity:
-                logger.debug(f"Incomplete fields for summary item {idx + 1}.")
-                return dbc.Alert(f"Please complete both casket and quantity fields for item {idx + 1}, or leave both empty.", color="danger")
+        # Get customer information from the database
+        session = Session()
+        try:
+            # Convert to uppercase only for database lookup
+            customer_name = customer.upper() if customer else customer
+            customer_info = session.query(CustomerInfo).filter_by(customer_name=customer_name).first()
+            if not customer_info:
+                return dbc.Alert("Customer information not found.", color="danger")
 
-        if not order_items:
-            logger.debug("No order items to summarize.")
-            return dbc.Alert("Please select at least one casket and quantity to generate an order summary.", color="danger")
+            # Prepare list of items
+            order_items = []
+            for idx, (casket_name, quantity) in enumerate(zip(casket_list, quantity_list)):
+                if casket_name and quantity:
+                    if quantity <= 0:
+                        return dbc.Alert(f"Please enter a valid quantity for item {idx + 1}.", color="danger")
+                    order_items.append({'casket': casket_name, 'quantity': quantity})
+                elif casket_name or quantity:
+                    return dbc.Alert(f"Please complete both casket and quantity fields for item {idx + 1}, or leave both empty.", color="danger")
 
-        # Generate order summary
-        order_summary = dbc.Container([
-            dbc.Row([
-                dbc.Col([
-                    html.H4("Order Summary"),
-                    html.P(f"Customer: {customer}"),
-                    html.Ul([html.Li(f"{item['casket']} - Quantity: {item['quantity']}") for item in order_items]),
-                    html.Button("Print Order", id='print-button', n_clicks=0, className='btn btn-primary', style={'marginTop': '10px'})
-                ], width=6),
-            ], justify="start", style={'marginTop': '20px'}),
-        ], fluid=True)
-        logger.debug("Order summary generated.")
-        return order_summary
+            if not order_items:
+                return dbc.Alert("Please select at least one casket and quantity to generate an order summary.", color="danger")
+
+            # Create print layout
+            print_layout = html.Div([
+                # Add margin-top to account for letterhead
+                html.Div(style={'marginTop': '180px'}),
+                
+                # Customer Information Section
+                html.Div([
+                    html.Table([
+                        html.Tr([
+                            html.Td("Sold to:", style={'width': '100px', 'verticalAlign': 'top'}),
+                            html.Td([
+                                html.Div(customer),  # Use original customer name
+                                html.Div(customer_info.address_line1),
+                                html.Div(customer_info.address_line2) if customer_info.address_line2 else None,
+                                html.Div(f"{customer_info.city}, {customer_info.state} {customer_info.zip_code}")
+                            ])
+                        ]),
+                    ], style={'width': '60%', 'marginBottom': '30px'}),
+                ]),
+
+                # Order Details
+                html.Div([
+                    html.Table([
+                        html.Tr([
+                            html.Td("Description of Merchandise", style={'borderBottom': '1px solid black', 'width': '80%'}),
+                            html.Td("Quantity", style={'borderBottom': '1px solid black', 'width': '20%', 'textAlign': 'center'}),
+                        ]),
+                        *[html.Tr([
+                            html.Td(item['casket']),
+                            html.Td(str(item['quantity']), style={'textAlign': 'center'})
+                        ]) for item in order_items]
+                    ], style={'width': '100%', 'marginBottom': '50px'}),
+                ]),
+
+                # Signature Line
+                html.Div([
+                    html.Table([
+                        html.Tr([
+                            html.Td([
+                                html.Div("signed :--------------------------------------------------------"),
+                            ], style={'width': '60%'}),
+                            html.Td([
+                                html.Div("date :----------------"),
+                            ], style={'width': '40%'})
+                        ])
+                    ], style={'width': '100%'})
+                ])
+            ], id='print-content', style={
+                'padding': '20px',
+                'width': '8.5in',
+                'minHeight': '11in',
+                'fontSize': '12px'
+            })
+
+            # Wrap everything in a container with print button
+            return html.Div([
+                dbc.Button(
+                    "Print Order", 
+                    id='print-button', 
+                    color="primary", 
+                    className="mb-3"
+                ),
+                print_layout
+            ])
+
+        except Exception as e:
+            logger.error(f"Error generating order summary: {e}")
+            return dbc.Alert("Error generating order summary.", color="danger")
+        finally:
+            session.close()
     return ""
+
+# Add CSS for print media
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+            @media print {
+                @page {
+                    margin: 0;
+                }
+                body * {
+                    visibility: hidden;
+                }
+                #print-content, #print-content * {
+                    visibility: visible;
+                }
+                #print-content {
+                    position: absolute;
+                    left: 0;
+                    top: 0;
+                }
+                .btn {
+                    display: none;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
 
 # Client-side callback to trigger the print dialog
 dash_app.clientside_callback(
@@ -1422,6 +1549,7 @@ def display_customer_info(selected_customer):
             return []
     finally:
         session.close()
+
 @dash_app.callback(
     Output('customer-select', 'options'),
     Output('customer-select', 'value'),
@@ -1451,6 +1579,9 @@ def add_new_customer(n_clicks, name, address_line1, address_line2, city, state, 
 
     session = Session()
     try:
+        # Convert name to uppercase before processing
+        name = name.upper() if name else name
+        
         # Check if the customer already exists
         existing_customer = session.query(CustomerInfo).filter_by(customer_name=name).first()
         if existing_customer:
@@ -1487,6 +1618,7 @@ def add_new_customer(n_clicks, name, address_line1, address_line2, city, state, 
         return dash.no_update, dash.no_update
     finally:
         session.close()
+
 # Callback to handle stock alerts table updates (if needed)
 @dash_app.callback(
     Output('stock-alerts-table', 'data'),
