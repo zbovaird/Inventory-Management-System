@@ -666,6 +666,7 @@ dash_app.layout = html.Div([
             dbc.NavItem(dbc.NavLink("Orders", href="/dashboard/orders")),
             dbc.NavItem(dbc.NavLink("Recent Purchases", href="/dashboard/recent-purchases")),
             dbc.NavItem(dbc.NavLink("Stock Alerts", href="/dashboard/stock-alerts")),
+	    dbc.NavItem(dbc.NavLink("Customer Information", href="/dashboard/customer-information")),
         ],
         brand="Service Casket Dashboard",
         brand_href="/dashboard/",
@@ -919,6 +920,160 @@ def stock_alerts_layout():
         ], justify="start", style={'marginTop': '20px'}),
     ], fluid=True)
 
+
+# Define the CustomerInfo model to store customer information
+class CustomerInfo(Base):
+    __tablename__ = 'customer_info'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    customer_name = Column(String, nullable=False)
+    address_line1 = Column(String)
+    address_line2 = Column(String)
+    city = Column(String)
+    state = Column(String)
+    zip_code = Column(String)
+
+# Create the tables (if not exist)
+Base.metadata.create_all(engine)
+logger.debug("Database tables created (if not existing).")
+
+#Customer Information Page
+def customer_info_layout():
+    session = Session()
+    try:
+        # Fetch all customer names from the CustomerInfo table
+        customer_names = [row[0] for row in session.query(CustomerInfo.customer_name).all()]
+        customer_options = [{'label': name, 'value': name} for name in customer_names]
+
+        return dbc.Container([
+            # Header Row
+            dbc.Row([
+                dbc.Col([
+                    html.H2("Customer Information", className="mb-4")
+                ], width=12)
+            ], className="mt-4"),
+
+            # Main content row
+            dbc.Row([
+                # Left Column - Customer Search
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader("Search Customer"),
+                        dbc.CardBody([
+                            dbc.Label("Select Customer", className="mb-2"),
+                            dcc.Dropdown(
+                                id='customer-select',
+                                options=customer_options,
+                                placeholder="Select a customer",
+                                className="mb-3"
+                            ),
+                            html.Div(id='customer-info-display', className="mt-3")
+                        ])
+                    ], className="h-100")
+                ], width=6, className="mb-4"),
+
+                # Right Column - Add New Customer
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader("Add New Customer"),
+                        dbc.CardBody([
+                            # Customer Name
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Customer Name", className="mb-2"),
+                                    dbc.Input(
+                                        id='new-customer-name',
+                                        placeholder="Enter customer name",
+                                        type="text",
+                                        size="lg",
+                                        className="mb-3"
+                                    ),
+                                ])
+                            ]),
+
+                            # Address Line 1
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Address Line 1", className="mb-2"),
+                                    dbc.Input(
+                                        id='new-address-line1',
+                                        placeholder="Street address",
+                                        type="text",
+                                        size="lg",
+                                        className="mb-3"
+                                    ),
+                                ])
+                            ]),
+
+                            # Address Line 2
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Label("Address Line 2", className="mb-2"),
+                                    dbc.Input(
+                                        id='new-address-line2',
+                                        placeholder="Apt, Suite, Building (optional)",
+                                        type="text",
+                                        size="lg",
+                                        className="mb-3"
+                                    ),
+                                ])
+                            ]),
+
+                            # City, State, and Zip in one row
+                            dbc.Row([
+                                # City
+                                dbc.Col([
+                                    dbc.Label("City", className="mb-2"),
+                                    dbc.Input(
+                                        id='new-city',
+                                        placeholder="City",
+                                        type="text",
+                                        size="lg"
+                                    ),
+                                ], width=5),
+
+                                # State
+                                dbc.Col([
+                                    dbc.Label("State", className="mb-2"),
+                                    dbc.Input(
+                                        id='new-state',
+                                        placeholder="State",
+                                        type="text",
+                                        size="lg"
+                                    ),
+                                ], width=3),
+
+                                # Zip Code
+                                dbc.Col([
+                                    dbc.Label("Zip Code", className="mb-2"),
+                                    dbc.Input(
+                                        id='new-zip',
+                                        placeholder="Zip",
+                                        type="text",
+                                        size="lg"
+                                    ),
+                                ], width=4),
+                            ], className="mb-3"),
+
+                            # Submit Button
+                            dbc.Row([
+                                dbc.Col([
+                                    dbc.Button(
+                                        "Add New Customer",
+                                        id="add-customer-button",
+                                        color="primary",
+                                        size="lg",
+                                        className="mt-3 w-100"
+                                    ),
+                                ])
+                            ]),
+                        ])
+                    ])
+                ], width=6, className="mb-4"),
+            ])
+        ], fluid=True)
+    finally:
+        session.close()
+
 # Callback to render the appropriate page based on the URL
 @dash_app.callback(
     Output('page-content', 'children'),
@@ -940,9 +1095,10 @@ def display_page(pathname):
         return recent_purchases_layout()
     elif relative_path == 'stock-alerts':
         return stock_alerts_layout()
+    elif relative_path == 'customer-information':
+        return customer_info_layout()
     else:
         return home_layout()
-
 
 # **Combined Callback to Handle Both Inventory Updates and Filtering**
 
@@ -1222,6 +1378,115 @@ def update_recent_purchases_table(customer_filter, product_filter):
         logger.error(f"Error filtering recent purchases: {e}")
         return []
 
+#Callback for Customer Information
+@dash_app.callback(
+    Output('customer-info-display', 'children'),
+    [Input('customer-select', 'value')]
+)
+def display_customer_info(selected_customer):
+    session = Session()
+    try:
+        if selected_customer:
+            customer_info = session.query(CustomerInfo).filter_by(customer_name=selected_customer).first()
+            if customer_info:
+                return dbc.Card([
+                    dbc.CardBody([
+                        html.H5("Customer Details", className="mb-3"),
+                        dbc.Row([
+                            dbc.Col([
+                                html.Strong("Name: ", className="mr-2"),
+                                html.Span(customer_info.customer_name),
+                            ], className="mb-2"),
+                        ]),
+                        dbc.Row([
+                            dbc.Col([
+                                html.Strong("Address: ", className="mr-2"),
+                                html.Span(customer_info.address_line1),
+                            ], className="mb-2"),
+                        ]),
+                        dbc.Row([
+                            dbc.Col([
+                                html.Span(customer_info.address_line2 or ""),
+                            ], className="mb-2") if customer_info.address_line2 else None,
+                        ]),
+                        dbc.Row([
+                            dbc.Col([
+                                html.Span(f"{customer_info.city}, {customer_info.state} {customer_info.zip_code}"),
+                            ]),
+                        ]),
+                    ])
+                ], className="mt-3")
+            else:
+                return dbc.Alert("No customer information found.", color="warning")
+        else:
+            return []
+    finally:
+        session.close()
+@dash_app.callback(
+    Output('customer-select', 'options'),
+    Output('customer-select', 'value'),
+    [Input("add-customer-button", "n_clicks")],
+    [State("new-customer-name", "value"),
+     State("new-address-line1", "value"),
+     State("new-address-line2", "value"),
+     State("new-city", "value"),
+     State("new-state", "value"),
+     State("new-zip", "value")])
+def add_new_customer(n_clicks, name, address_line1, address_line2, city, state, zip_code):
+    # Check if this is the initial call
+    if n_clicks is None:
+        session = Session()
+        try:
+            # Get initial customer options
+            customer_names = [row[0] for row in session.query(CustomerInfo.customer_name).all()]
+            customer_options = [{'label': name, 'value': name} for name in customer_names]
+            return customer_options, None
+        finally:
+            session.close()
+    
+    # Check if we have the required fields
+    if not name or not address_line1 or not city or not state or not zip_code:
+        logger.warning("Missing required customer information fields")
+        return dash.no_update, dash.no_update
+
+    session = Session()
+    try:
+        # Check if the customer already exists
+        existing_customer = session.query(CustomerInfo).filter_by(customer_name=name).first()
+        if existing_customer:
+            # Update the existing customer's address
+            existing_customer.address_line1 = address_line1
+            existing_customer.address_line2 = address_line2
+            existing_customer.city = city
+            existing_customer.state = state
+            existing_customer.zip_code = zip_code
+            logger.info(f"Updated existing customer: {name}")
+        else:
+            # Add a new customer
+            new_customer = CustomerInfo(
+                customer_name=name,
+                address_line1=address_line1,
+                address_line2=address_line2,
+                city=city,
+                state=state,
+                zip_code=zip_code
+            )
+            session.add(new_customer)
+            logger.info(f"Added new customer: {name}")
+
+        session.commit()
+
+        # Refresh the customer options
+        customer_names = [row[0] for row in session.query(CustomerInfo.customer_name).all()]
+        customer_options = [{'label': name, 'value': name} for name in customer_names]
+        return customer_options, name
+
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error adding/updating customer: {e}")
+        return dash.no_update, dash.no_update
+    finally:
+        session.close()
 # Callback to handle stock alerts table updates (if needed)
 @dash_app.callback(
     Output('stock-alerts-table', 'data'),
@@ -1237,6 +1502,8 @@ def update_stock_alerts(data_timestamp):
     except Exception as e:
         logger.error(f"Error updating stock alerts table: {e}")
         return []
+
+
 
 # Run the Flask and Dash app together
 if __name__ == '__main__':
