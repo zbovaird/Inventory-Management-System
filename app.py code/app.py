@@ -14,7 +14,7 @@ from sqlalchemy import create_engine, Column, String, Integer, event, text
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
 from sqlalchemy.exc import SQLAlchemyError
 import paho.mqtt.client as mqtt
-from dash import Dash, dcc, html, dash_table, callback_context
+from dash import Dash, dcc, html, dash_table, callback_context, no_update
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 from dash.dependencies import Input, Output, State, ALL
@@ -42,9 +42,11 @@ login_manager.login_view = 'login'
 # Get users from config
 users = Config.USERS
 
+
 class User(UserMixin):
     def __init__(self, id):
         self.id = id
+
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -52,11 +54,13 @@ def load_user(user_id):
         return User(user_id)
     return None
 
+
 # Function to get client IP
 def get_client_ip():
     if request.headers.getlist("X-Forwarded-For"):
         return request.headers.getlist("X-Forwarded-For")[0]
     return request.remote_addr
+
 
 # Function to check if IP is local
 def is_local_ip(ip):
@@ -66,6 +70,7 @@ def is_local_ip(ip):
     except ValueError:
         return False
 
+
 # Custom decorator for local network bypass
 def local_or_authenticated(f):
     @wraps(f)
@@ -73,7 +78,9 @@ def local_or_authenticated(f):
         if is_local_ip(get_client_ip()):
             return f(*args, **kwargs)
         return login_required(f)(*args, **kwargs)
+
     return decorated_function
+
 
 # Authentication routes
 @app.route('/login', methods=['GET', 'POST'])
@@ -97,11 +104,12 @@ def login():
                 return redirect(next_page)
             else:
                 return redirect(url_for('index'))
-        
+
         logger.debug("Invalid credentials provided.")
         return render_template('login.html', error='Invalid credentials')
 
     return render_template('login.html')
+
 
 @app.route('/logout')
 @login_required
@@ -110,17 +118,20 @@ def logout():
     logout_user()
     return redirect(url_for('login'))
 
+
 @app.route('/')
 @local_or_authenticated
 def index():
     logger.debug("Redirecting to /dashboard/")
     return redirect('/dashboard/')
 
+
 @app.route('/print-order')
 def print_order():
     # This function will generate the content for the printable order summary page
     # You can reuse the code you had for generating the order summary
     return render_template('print_order.html', order_summary=order_summary_content)
+
 
 # Ensure the instance folder exists
 instance_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance')
@@ -137,16 +148,20 @@ engine = create_engine(
     pool_recycle=3600
 )
 
+
 # Set up SQLite PRAGMA for lock timeout and WAL mode
 @event.listens_for(engine, "connect")
 def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA busy_timeout = 10000")  # 10 seconds timeout
-    cursor.execute("PRAGMA journal_mode = WAL")    # Write-Ahead Logging to improve concurrency
+    cursor.execute("PRAGMA journal_mode = WAL")  # Write-Ahead Logging to improve concurrency
     cursor.close()
     logger.debug("SQLite PRAGMA set for lock timeout and WAL mode.")
 
+
 Base = declarative_base()
+
+
 # Define the Inventory model (barcode, product name, and quantity)
 class Inventory(Base):
     __tablename__ = 'inventory'
@@ -154,6 +169,7 @@ class Inventory(Base):
     barcode = Column(String, unique=True, nullable=False)
     product_name = Column(String)  # Product name mapped from barcode
     quantity = Column(Integer, default=1)
+
 
 # Define the Purchase model to track purchases
 class Purchase(Base):
@@ -163,6 +179,7 @@ class Purchase(Base):
     product_name = Column(String, nullable=False)
     quantity = Column(Integer, nullable=False)
     date_purchased = Column(String, default=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 
 # Create the tables (if not exist)
 Base.metadata.create_all(engine)
@@ -184,6 +201,7 @@ try:
 except Exception as e:
     logger.error(f"Failed to connect to MQTT broker: {e}")
 
+
 # Function to publish messages to the MQTT broker
 def publish_to_mqtt(action, data):
     message = {
@@ -195,6 +213,7 @@ def publish_to_mqtt(action, data):
         logger.error(f"Failed to publish MQTT message: {result.rc}")
     else:
         logger.debug(f"Published MQTT message: {message}")
+
 
 # Updated barcode to product name mapping with new 6-digit prefixes
 barcode_prefix_mapping = {
@@ -221,6 +240,7 @@ barcode_prefix_mapping = {
     '210937': 'Kessens Grey',
 }
 
+
 # Helper function to get inventory from the database
 def get_inventory_from_db():
     try:
@@ -234,6 +254,7 @@ def get_inventory_from_db():
     except Exception as e:
         logger.error(f"Error fetching inventory from DB: {e}")
         return []
+
 
 # Helper function to get recent purchases from the database
 def get_recent_purchases_from_db():
@@ -249,10 +270,12 @@ def get_recent_purchases_from_db():
         rows = cursor.fetchall()
         conn.close()
         logger.debug(f"Fetched recent purchases from DB: {rows}")
-        return [{"customer": row[0], "product_name": row[1], "quantity": row[2], "date_purchased": row[3]} for row in rows]
+        return [{"customer": row[0], "product_name": row[1], "quantity": row[2], "date_purchased": row[3]} for row in
+                rows]
     except Exception as e:
         logger.error(f"Error fetching recent purchases from DB: {e}")
         return []
+
 
 # Helper function to get stock alerts from the database
 def get_stock_alerts_from_db():
@@ -267,6 +290,7 @@ def get_stock_alerts_from_db():
     except Exception as e:
         logger.error(f"Error fetching stock alerts from DB: {e}")
         return []
+
 
 # Flask before_request to enforce authentication on /dashboard/* routes
 @app.before_request
@@ -286,6 +310,7 @@ def before_request_func():
     # No action needed for non-Dash routes or local IPs
     return None
 
+
 # Initialize Dash app with proper URL prefixes
 dash_app = Dash(
     __name__,
@@ -293,7 +318,7 @@ dash_app = Dash(
     external_stylesheets=[dbc.themes.LITERA],
     suppress_callback_exceptions=True,  # Allows callbacks for dynamic components
     requests_pathname_prefix='/dashboard/',  # Handles incoming requests under /dashboard/
-    routes_pathname_prefix='/dashboard/'     # Dash internal routing prefix
+    routes_pathname_prefix='/dashboard/'  # Dash internal routing prefix
 )
 
 # Customer options for the dropdown menu
@@ -671,7 +696,7 @@ dash_app.layout = html.Div([
             dbc.NavItem(dbc.NavLink("Orders", href="/dashboard/orders")),
             dbc.NavItem(dbc.NavLink("Recent Purchases", href="/dashboard/recent-purchases")),
             dbc.NavItem(dbc.NavLink("Stock Alerts", href="/dashboard/stock-alerts")),
-	    dbc.NavItem(dbc.NavLink("Customer Information", href="/dashboard/customer-information")),
+            dbc.NavItem(dbc.NavLink("Customer Information", href="/dashboard/customer-information")),
         ],
         brand="Service Casket Dashboard",
         brand_href="/dashboard/",
@@ -683,6 +708,7 @@ dash_app.layout = html.Div([
     html.Div(id='print-output', style={'display': 'none'}),
 ])
 
+
 # Home Page Layout
 def home_layout():
     inventory = get_inventory_from_db()
@@ -690,7 +716,7 @@ def home_layout():
     product_options = [{'label': name, 'value': name} for name in product_names]
 
     return dbc.Container([
-        # Search bar for products (dropdown with autocomplete)
+        # Existing search bar
         dbc.Row([
             dbc.Col([
                 html.Label("Search by Product Name"),
@@ -705,7 +731,7 @@ def home_layout():
             ], width=6),
         ], justify="start", style={'marginTop': '20px'}),
 
-        # Inventory DataTable with "Add Quantity" column
+        # Existing inventory table
         dbc.Row([
             dbc.Col([
                 dash_table.DataTable(
@@ -715,7 +741,7 @@ def home_layout():
                         {"name": "Quantity", "id": "quantity"},
                         {"name": "Add Quantity", "id": "add_quantity", "type": 'numeric', "editable": True},
                     ],
-                    data=[{**item, 'add_quantity': ''} for item in inventory],  # Initialize "Add Quantity" as empty
+                    data=[{**item, 'add_quantity': ''} for item in inventory],
                     style_data_conditional=[
                         {
                             'if': {
@@ -737,7 +763,171 @@ def home_layout():
                 )
             ], width=8),
         ], justify="start", style={'marginTop': '20px'}),
+
+        # New Add Casket Form
+        dbc.Row([
+            dbc.Col([
+                html.H4("Add New Casket", className="mt-4 mb-3"),
+                dbc.Card([
+                    dbc.CardBody([
+                        dbc.Row([
+                            dbc.Col([
+                                dbc.Label("Casket Name"),
+                                dbc.Input(
+                                    id='new-casket-name',
+                                    type='text',
+                                    placeholder="Enter casket name"
+                                ),
+                            ], width=6),
+                            dbc.Col([
+                                dbc.Label("Initial Quantity"),
+                                dbc.Input(
+                                    id='new-casket-quantity',
+                                    type='number',
+                                    min=0,
+                                    placeholder="Enter initial quantity"
+                                ),
+                            ], width=3),
+                            dbc.Col([
+                                dbc.Button(
+                                    "Add Casket",
+                                    id='add-casket-button',
+                                    color="primary",
+                                    className="mt-4"
+                                ),
+                            ], width=3),
+                        ]),
+                        html.Div(id='add-casket-message', className="mt-3")
+                    ])
+                ])
+            ], width=8)
+        ], justify="start", style={'marginTop': '20px'}),
     ], fluid=True)
+
+
+# Combined callback for inventory management
+
+
+@dash_app.callback(
+    [Output('inventory-table', 'data'),
+     Output('add-casket-message', 'children')],
+    [Input('inventory-table', 'data_timestamp'),
+     Input('add-casket-button', 'n_clicks'),
+     Input('inventory-search', 'value')],
+    [State('inventory-table', 'data'),
+     State('inventory-table', 'data_previous'),
+     State('new-casket-name', 'value'),
+     State('new-casket-quantity', 'value')]
+)
+def manage_inventory(timestamp, add_button_clicks, search_value, current_data, previous_data, new_casket_name, new_quantity):
+    ctx = callback_context
+    if not ctx.triggered:
+        return no_update, no_update
+
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    session = Session()
+
+    try:
+        # Handle Add Casket button click
+        if triggered_id == 'add-casket-button' and add_button_clicks:
+            if not new_casket_name:
+                return no_update, dbc.Alert("Please enter a casket name.", color="danger")
+
+            try:
+                new_quantity = int(new_quantity) if new_quantity else 0
+                if new_quantity < 0:
+                    return no_update, dbc.Alert("Quantity cannot be negative.", color="danger")
+            except ValueError:
+                return no_update, dbc.Alert("Please enter a valid quantity.", color="danger")
+
+            # Check if casket already exists
+            existing_casket = session.query(Inventory).filter_by(product_name=new_casket_name).first()
+            if existing_casket:
+                return no_update, dbc.Alert(f"Casket '{new_casket_name}' already exists in inventory.", color="warning")
+
+            # Add new casket
+            new_casket = Inventory(
+                product_name=new_casket_name,
+                quantity=new_quantity,
+                barcode=None
+            )
+            session.add(new_casket)
+            session.commit()
+
+            # Publish update to MQTT
+            publish_to_mqtt('add', {
+                'product_name': new_casket_name,
+                'quantity': new_quantity
+            })
+
+            # Get updated inventory data
+            updated_inventory = get_inventory_from_db()
+            updated_data = [{**item, 'add_quantity': ''} for item in updated_inventory]
+
+            return updated_data, dbc.Alert(f"Casket '{new_casket_name}' added successfully!", color="success")
+
+        # Handle quantity updates in the inventory table
+        elif triggered_id == 'inventory-table' and current_data and previous_data:
+            updates_made = False
+            for new_row, old_row in zip(current_data, previous_data):
+                add_quantity = new_row.get('add_quantity', '')
+                if add_quantity and add_quantity != old_row.get('add_quantity', ''):
+                    try:
+                        add_value = int(float(add_quantity))  # Handle both integer and decimal inputs
+                        if add_value < 0:
+                            continue
+
+                        product_name = new_row['product_name']
+                        inventory_item = session.query(Inventory).filter_by(product_name=product_name).first()
+
+                        if inventory_item:
+                            inventory_item.quantity += add_value
+                            new_row['quantity'] = inventory_item.quantity
+                            new_row['add_quantity'] = ''
+                            updates_made = True
+
+                            # Publish update to MQTT
+                            publish_to_mqtt('update', {
+                                'product_name': product_name,
+                                'quantity': inventory_item.quantity
+                            })
+                    except (ValueError, TypeError):
+                        continue
+
+            if updates_made:
+                session.commit()
+                return current_data, no_update
+
+        # Handle search filtering
+        elif triggered_id == 'inventory-search':
+            if search_value:
+                inventory_item = session.query(Inventory).filter_by(product_name=search_value).first()
+                if inventory_item:
+                    filtered_data = [{
+                        "product_name": inventory_item.product_name,
+                        "quantity": inventory_item.quantity,
+                        "add_quantity": ''
+                    }]
+                    return filtered_data, no_update
+                return [], no_update
+            else:
+                updated_inventory = get_inventory_from_db()
+                full_data = [{**item, 'add_quantity': ''} for item in updated_inventory]
+                return full_data, no_update
+
+        return no_update, no_update
+
+    except SQLAlchemyError as e:
+        session.rollback()
+        logger.error(f"Database error in inventory management: {e}")
+        return no_update, dbc.Alert("A database error occurred while managing inventory.", color="danger")
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error in inventory management: {e}")
+        return no_update, dbc.Alert("An error occurred while managing inventory.", color="danger")
+    finally:
+        session.close()
+
 
 # Orders Page Layout
 def orders_layout():
@@ -778,7 +968,8 @@ def orders_layout():
         dbc.Row([
             dbc.Col([
                 html.Button("Confirm Order", id='confirm-order-button', n_clicks=0, className='btn btn-success'),
-                html.Button("Generate Order Summary", id='generate-order-button', n_clicks=0, className='btn btn-info', style={'marginLeft': '10px'}),
+                html.Button("Generate Order Summary", id='generate-order-button', n_clicks=0, className='btn btn-info',
+                            style={'marginLeft': '10px'}),
             ], width=6),
         ], justify="start", style={'marginTop': '20px'}),
 
@@ -791,28 +982,30 @@ def orders_layout():
         ], justify="start"),
     ], fluid=True)
 
+
 @dash_app.callback(
     Output('customer-dropdown', 'options'),
     Input('url', 'pathname')
 )
-def update_customer_dropdown():
+def update_customer_dropdown(pathname):
     session = Session()
     try:
         # Get customers from CustomerInfo table
         db_customers = [row[0].upper() for row in session.query(CustomerInfo.customer_name).all()]
-        
+
         # Get predefined customer options (they're already in uppercase)
         predefined_customers = [opt['value'] for opt in customer_options]
-        
+
         # Combine both lists and remove duplicates
         all_customers = sorted(set(predefined_customers) | set(db_customers))
-        
+
         # Create options list with consistent uppercase
         combined_options = [{'label': name, 'value': name} for name in all_customers]
-        
+
         return combined_options
     finally:
         session.close()
+
 
 def create_order_item(index, casket_options):
     return html.Div([
@@ -840,6 +1033,7 @@ def create_order_item(index, casket_options):
             ], width=2),
         ], justify="start", style={'marginTop': '10px'}),
     ], id={'type': 'order-item', 'index': index})
+
 
 # Recent Purchases Page Layout
 def recent_purchases_layout():
@@ -909,6 +1103,7 @@ def recent_purchases_layout():
         ], justify="start", style={'marginTop': '20px'}),
     ], fluid=True)
 
+
 # Stock Alerts Page Layout
 def stock_alerts_layout():
     stock_alerts = get_stock_alerts_from_db()
@@ -960,11 +1155,13 @@ class CustomerInfo(Base):
     state = Column(String)
     zip_code = Column(String)
 
+
 # Create the tables (if not exist)
 Base.metadata.create_all(engine)
 logger.debug("Database tables created (if not existing).")
 
-#Customer Information Page
+
+# Customer Information Page
 def customer_info_layout():
     session = Session()
     try:
@@ -1102,6 +1299,7 @@ def customer_info_layout():
     finally:
         session.close()
 
+
 # Callback to render the appropriate page based on the URL
 @dash_app.callback(
     Output('page-content', 'children'),
@@ -1128,91 +1326,11 @@ def display_page(pathname):
     else:
         return home_layout()
 
+
 # **Combined Callback to Handle Both Inventory Updates and Filtering**
 
-@dash_app.callback(
-    Output('inventory-table', 'data'),
-    [
-        Input('inventory-table', 'data'),
-        Input('inventory-search', 'value')
-    ],
-    [
-        State('inventory-table', 'data_previous')
-    ]
-)
-def manage_inventory_table(table_data, search_value, data_previous):
-    ctx = callback_context
-    if not ctx.triggered:
-        raise PreventUpdate
-    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
-    session = Session()
-    try:
-        if triggered_id == 'inventory-table':
-            # Handle Add Quantity updates
-            for new_row, old_row in zip(table_data, data_previous):
-                product_name = new_row['product_name']
-                add_quantity = new_row.get('add_quantity', '')
 
-                if add_quantity != old_row.get('add_quantity', '') and add_quantity != '':
-                    try:
-                        add_value = int(add_quantity)
-                        if add_value < 0:
-                            logger.warning(f"Negative add quantity for {product_name} ignored.")
-                            new_row['add_quantity'] = ''
-                            continue
-                    except ValueError:
-                        logger.warning(f"Invalid add quantity input for {product_name}: {add_quantity}")
-                        new_row['add_quantity'] = ''
-                        continue
-
-                    # Update the quantity in the database
-                    inventory_item = session.query(Inventory).filter_by(product_name=product_name).first()
-                    if inventory_item:
-                        inventory_item.quantity += add_value
-                        new_row['quantity'] = inventory_item.quantity
-                        new_row['add_quantity'] = ''  # Clear the add_quantity field
-
-                        # Publish the update to MQTT
-                        publish_to_mqtt('update', {
-                            'product_name': product_name,
-                            'quantity': inventory_item.quantity
-                        })
-                        logger.debug(f"Updated {product_name}: new quantity {inventory_item.quantity}")
-                    else:
-                        logger.warning(f"Product {product_name} not found in inventory.")
-                        new_row['add_quantity'] = ''
-
-            session.commit()  # Commit the session after processing all updates
-
-        # After handling updates, apply the search filter
-        if search_value:
-            # Fetch inventory items that match the search value
-            inventory_item = session.query(Inventory).filter_by(product_name=search_value).first()
-            if inventory_item:
-                filtered_data = [{
-                    "product_name": inventory_item.product_name,
-                    "quantity": inventory_item.quantity,
-                    "add_quantity": ''
-                }]
-                logger.debug(f"Filtered inventory data based on search: {filtered_data}")
-                return filtered_data
-            else:
-                logger.debug("No matching product found for the search.")
-                return []
-        else:
-            # If no search value, return all inventory
-            updated_inventory = get_inventory_from_db()
-            full_data = [{**item, 'add_quantity': ''} for item in updated_inventory]
-            logger.debug(f"Returning full inventory data: {full_data}")
-            return full_data
-
-    except Exception as e:
-        session.rollback()
-        logger.error(f"Error managing inventory: {e}")
-        raise PreventUpdate
-    finally:
-        session.close()
 
 # Callback to add new order items dynamically
 @dash_app.callback(
@@ -1228,6 +1346,7 @@ def add_order_item(n_clicks, children):
         children.append(new_item)
         logger.debug(f"Added new order item with index {n_clicks}.")
     return children
+
 
 # Callback to handle order confirmation
 @dash_app.callback(
@@ -1253,7 +1372,9 @@ def confirm_order(n_clicks, customer, casket_list, quantity_list):
                 order_items.append({'casket': casket_name, 'quantity': quantity})
             elif casket_name or quantity:
                 logger.debug(f"Incomplete fields for item {idx + 1}.")
-                return dbc.Alert(f"Please complete both casket and quantity fields for item {idx + 1}, or leave both empty.", color="danger")
+                return dbc.Alert(
+                    f"Please complete both casket and quantity fields for item {idx + 1}, or leave both empty.",
+                    color="danger")
 
         if not order_items:
             logger.debug("No order items added.")
@@ -1282,7 +1403,8 @@ def confirm_order(n_clicks, customer, casket_list, quantity_list):
                         session.add(purchase)
                     else:
                         logger.debug(f"Insufficient stock for {casket_name}. Available: {inventory_item.quantity}")
-                        return dbc.Alert(f"Insufficient stock for {casket_name}. Available: {inventory_item.quantity}", color="danger")
+                        return dbc.Alert(f"Insufficient stock for {casket_name}. Available: {inventory_item.quantity}",
+                                         color="danger")
                 else:
                     logger.debug(f"Casket {casket_name} not found in inventory.")
                     return dbc.Alert(f"Casket {casket_name} not found in inventory.", color="danger")
@@ -1307,6 +1429,7 @@ def confirm_order(n_clicks, customer, casket_list, quantity_list):
         finally:
             session.close()
     return ""
+
 
 # Callback to generate order summary
 @dash_app.callback(
@@ -1336,17 +1459,20 @@ def display_order_summary(n_clicks, customer, casket_list, quantity_list):
                     order_items.append({'casket': casket_name, 'quantity': quantity})
                 elif casket_name or quantity:
                     logger.debug(f"Incomplete fields for item {idx + 1}.")
-                    return dbc.Alert(f"Please complete both casket and quantity fields for item {idx + 1}, or leave both empty.", color="danger")
+                    return dbc.Alert(
+                        f"Please complete both casket and quantity fields for item {idx + 1}, or leave both empty.",
+                        color="danger")
 
             if not order_items:
                 logger.debug("No order items added.")
-                return dbc.Alert("Please select at least one casket and quantity to generate an order summary.", color="danger")
+                return dbc.Alert("Please select at least one casket and quantity to generate an order summary.",
+                                 color="danger")
 
             # Create print layout
             print_layout = html.Div([
                 # Add margin-top to account for letterhead
                 html.Div(style={'marginTop': '180px'}),
-                
+
                 # Customer Information Section
                 html.Div([
                     html.Table([
@@ -1366,8 +1492,10 @@ def display_order_summary(n_clicks, customer, casket_list, quantity_list):
                 html.Div([
                     html.Table([
                         html.Tr([
-                            html.Td("Description of Merchandise", style={'borderBottom': '1px solid black', 'width': '80%'}),
-                            html.Td("Quantity", style={'borderBottom': '1px solid black', 'width': '20%', 'textAlign': 'center'}),
+                            html.Td("Description of Merchandise",
+                                    style={'borderBottom': '1px solid black', 'width': '80%'}),
+                            html.Td("Quantity",
+                                    style={'borderBottom': '1px solid black', 'width': '20%', 'textAlign': 'center'}),
                         ]),
                         *[html.Tr([
                             html.Td(item['casket']),
@@ -1399,9 +1527,9 @@ def display_order_summary(n_clicks, customer, casket_list, quantity_list):
             # Wrap everything in a container with print button
             return html.Div([
                 dbc.Button(
-                    "Print Order", 
-                    id='print-button', 
-                    color="primary", 
+                    "Print Order",
+                    id='print-button',
+                    color="primary",
                     className="mb-3"
                 ),
                 print_layout
@@ -1413,6 +1541,7 @@ def display_order_summary(n_clicks, customer, casket_list, quantity_list):
         finally:
             session.close()
     return ""
+
 
 # Add CSS for print media
 app.index_string = '''
@@ -1470,6 +1599,7 @@ dash_app.clientside_callback(
     Input('print-button', 'n_clicks')
 )
 
+
 # Callback to update the recent purchases table based on the filters
 @dash_app.callback(
     Output('recent-purchases-table', 'data'),
@@ -1502,14 +1632,16 @@ def update_recent_purchases_table(customer_filter, product_filter):
         cursor.execute(query, params)
         rows = cursor.fetchall()
         conn.close()
-        data = [{"customer": row[0], "product_name": row[1], "quantity": row[2], "date_purchased": row[3]} for row in rows]
+        data = [{"customer": row[0], "product_name": row[1], "quantity": row[2], "date_purchased": row[3]} for row in
+                rows]
         logger.debug(f"Filtered recent purchases data: {data}")
         return data
     except Exception as e:
         logger.error(f"Error filtering recent purchases: {e}")
         return []
 
-#Callback for Customer Information
+
+# Callback for Customer Information
 @dash_app.callback(
     Output('customer-info-display', 'children'),
     [Input('customer-select', 'value')]
@@ -1554,6 +1686,7 @@ def display_customer_info(selected_customer):
     finally:
         session.close()
 
+
 @dash_app.callback(
     Output('customer-select', 'options'),
     Output('customer-select', 'value'),
@@ -1575,7 +1708,7 @@ def add_new_customer(n_clicks, name, address_line1, address_line2, city, state, 
             return customer_options, None
         finally:
             session.close()
-    
+
     # Check if we have the required fields
     if not name or not address_line1 or not city or not state or not zip_code:
         logger.warning("Missing required customer information fields")
@@ -1585,7 +1718,7 @@ def add_new_customer(n_clicks, name, address_line1, address_line2, city, state, 
     try:
         # Convert name to uppercase before processing
         name = name.upper() if name else name
-        
+
         # Check if the customer already exists
         existing_customer = session.query(CustomerInfo).filter_by(customer_name=name).first()
         if existing_customer:
@@ -1623,6 +1756,7 @@ def add_new_customer(n_clicks, name, address_line1, address_line2, city, state, 
     finally:
         session.close()
 
+
 # Callback to handle stock alerts table updates (if needed)
 @dash_app.callback(
     Output('stock-alerts-table', 'data'),
@@ -1638,7 +1772,6 @@ def update_stock_alerts(data_timestamp):
     except Exception as e:
         logger.error(f"Error updating stock alerts table: {e}")
         return []
-
 
 
 # Run the Flask and Dash app together
