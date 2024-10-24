@@ -2,7 +2,6 @@ import os
 import sys
 import logging
 import json
-import dash
 from datetime import datetime
 from flask import Flask, request, jsonify, redirect, url_for, render_template
 from flask_cors import CORS
@@ -15,7 +14,7 @@ from sqlalchemy import create_engine, Column, String, Integer, event, text
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
 from sqlalchemy.exc import SQLAlchemyError
 import paho.mqtt.client as mqtt
-from dash import Dash, dcc, html, dash_table, callback_context, no_update
+from dash import Dash, dcc, html, dash_table, callback_context
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 from dash.dependencies import Input, Output, State, ALL
@@ -152,8 +151,8 @@ Base = declarative_base()
 class Inventory(Base):
     __tablename__ = 'inventory'
     id = Column(Integer, primary_key=True, autoincrement=True)
-    barcode = Column(String, unique=True, nullable=True)  # Changed to nullable=True
-    product_name = Column(String)
+    barcode = Column(String, unique=True, nullable=False)
+    product_name = Column(String)  # Product name mapped from barcode
     quantity = Column(Integer, default=1)
 
 # Define the Purchase model to track purchases
@@ -684,7 +683,6 @@ dash_app.layout = html.Div([
     html.Div(id='print-output', style={'display': 'none'}),
 ])
 
-
 # Home Page Layout
 def home_layout():
     inventory = get_inventory_from_db()
@@ -692,7 +690,7 @@ def home_layout():
     product_options = [{'label': name, 'value': name} for name in product_names]
 
     return dbc.Container([
-        # Existing search bar
+        # Search bar for products (dropdown with autocomplete)
         dbc.Row([
             dbc.Col([
                 html.Label("Search by Product Name"),
@@ -707,7 +705,7 @@ def home_layout():
             ], width=6),
         ], justify="start", style={'marginTop': '20px'}),
 
-        # Existing inventory table
+        # Inventory DataTable with "Add Quantity" column
         dbc.Row([
             dbc.Col([
                 dash_table.DataTable(
@@ -717,7 +715,7 @@ def home_layout():
                         {"name": "Quantity", "id": "quantity"},
                         {"name": "Add Quantity", "id": "add_quantity", "type": 'numeric', "editable": True},
                     ],
-                    data=[{**item, 'add_quantity': ''} for item in inventory],
+                    data=[{**item, 'add_quantity': ''} for item in inventory],  # Initialize "Add Quantity" as empty
                     style_data_conditional=[
                         {
                             'if': {
@@ -739,179 +737,7 @@ def home_layout():
                 )
             ], width=8),
         ], justify="start", style={'marginTop': '20px'}),
-
-        # New Add Casket Form
-        dbc.Row([
-            dbc.Col([
-                html.H4("Add New Casket", className="mt-4 mb-3"),
-                dbc.Card([
-                    dbc.CardBody([
-                        dbc.Row([
-                            dbc.Col([
-                                dbc.Label("Casket Name"),
-                                dbc.Input(
-                                    id='new-casket-name',
-                                    type='text',
-                                    placeholder="Enter casket name"
-                                ),
-                            ], width=6),
-                            dbc.Col([
-                                dbc.Label("Initial Quantity"),
-                                dbc.Input(
-                                    id='new-casket-quantity',
-                                    type='number',
-                                    min=0,
-                                    placeholder="Enter initial quantity"
-                                ),
-                            ], width=3),
-                            dbc.Col([
-                                dbc.Button(
-                                    "Add Casket",
-                                    id='add-casket-button',
-                                    color="primary",
-                                    className="mt-4"
-                                ),
-                            ], width=3),
-                        ]),
-                        html.Div(id='add-casket-message', className="mt-3")
-                    ])
-                ])
-            ], width=8)
-        ], justify="start", style={'marginTop': '20px'}),
     ], fluid=True)
-
-# Combined callback for inventory management
-
-
-@dash_app.callback(
-    [Output('inventory-table', 'data'),
-     Output('add-casket-message', 'children')],
-    [Input('inventory-table', 'data'),
-     Input('add-casket-button', 'n_clicks'),
-     Input('inventory-search', 'value')],
-    [State('inventory-table', 'data_previous'),
-     State('new-casket-name', 'value'),
-     State('new-casket-quantity', 'value')]
-)
-def manage_inventory(table_data, add_button_clicks, search_value, data_previous, new_casket_name, new_quantity):
-    ctx = callback_context
-    if not ctx.triggered:
-        raise PreventUpdate
-
-    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
-    session = Session()
-
-    try:
-        # Handle Add Casket button click
-        if triggered_id == 'add-casket-button':
-            if add_button_clicks is None:
-                raise PreventUpdate
-
-            if not new_casket_name:
-                return no_update, dbc.Alert("Please enter a casket name.", color="danger")
-
-            if new_quantity is None:
-                return no_update, dbc.Alert("Please enter an initial quantity.", color="danger")
-
-            try:
-                new_quantity = int(new_quantity)
-                if new_quantity < 0:
-                    return no_update, dbc.Alert("Quantity cannot be negative.", color="danger")
-            except ValueError:
-                return no_update, dbc.Alert("Please enter a valid quantity.", color="danger")
-
-            # Check if casket already exists
-            existing_casket = session.query(Inventory).filter_by(product_name=new_casket_name).first()
-            if existing_casket:
-                return no_update, dbc.Alert(f"Casket '{new_casket_name}' already exists in inventory.", color="warning")
-
-            # Add new casket to inventory
-            new_casket = Inventory(
-                product_name=new_casket_name,
-                quantity=new_quantity,
-                barcode=None
-            )
-            session.add(new_casket)
-            session.commit()
-
-            # Publish update to MQTT
-            publish_to_mqtt('add', {
-                'product_name': new_casket_name,
-                'quantity': new_quantity
-            })
-
-            # Get updated inventory data
-            updated_inventory = get_inventory_from_db()
-            updated_data = [{**item, 'add_quantity': ''} for item in updated_inventory]
-
-            return updated_data, dbc.Alert(f"Casket '{new_casket_name}' added successfully!", color="success")
-
-        # Handle inventory table updates
-        if triggered_id == 'inventory-table':
-            if table_data == data_previous:
-                raise PreventUpdate
-
-            for new_row, old_row in zip(table_data, data_previous):
-                product_name = new_row['product_name']
-                add_quantity = new_row.get('add_quantity', '')
-
-                if add_quantity != old_row.get('add_quantity', '') and add_quantity != '':
-                    try:
-                        add_value = int(add_quantity)
-                        if add_value < 0:
-                            logger.warning(f"Negative add quantity for {product_name} ignored.")
-                            new_row['add_quantity'] = ''
-                            continue
-                    except ValueError:
-                        logger.warning(f"Invalid add quantity input for {product_name}: {add_quantity}")
-                        new_row['add_quantity'] = ''
-                        continue
-
-                    inventory_item = session.query(Inventory).filter_by(product_name=product_name).first()
-                    if inventory_item:
-                        inventory_item.quantity += add_value
-                        new_row['quantity'] = inventory_item.quantity
-                        new_row['add_quantity'] = ''
-
-                        publish_to_mqtt('update', {
-                            'product_name': product_name,
-                            'quantity': inventory_item.quantity
-                        })
-                        logger.debug(f"Updated {product_name}: new quantity {inventory_item.quantity}")
-                    else:
-                        logger.warning(f"Product {product_name} not found in inventory.")
-                        new_row['add_quantity'] = ''
-
-            session.commit()
-            return table_data, no_update
-
-        # Handle search filtering
-        if triggered_id == 'inventory-search':
-            if search_value:
-                inventory_item = session.query(Inventory).filter_by(product_name=search_value).first()
-                if inventory_item:
-                    filtered_data = [{
-                        "product_name": inventory_item.product_name,
-                        "quantity": inventory_item.quantity,
-                        "add_quantity": ''
-                    }]
-                    return filtered_data, no_update
-                else:
-                    return [], no_update
-            else:
-                updated_inventory = get_inventory_from_db()
-                full_data = [{**item, 'add_quantity': ''} for item in updated_inventory]
-                return full_data, no_update
-
-        # Default case if no conditions are met
-        return no_update, no_update
-
-    except Exception as e:
-        session.rollback()
-        logger.error(f"Error managing inventory: {e}")
-        return no_update, dbc.Alert("An error occurred while managing inventory.", color="danger")
-    finally:
-        session.close()
 
 # Orders Page Layout
 def orders_layout():
@@ -969,7 +795,7 @@ def orders_layout():
     Output('customer-dropdown', 'options'),
     Input('url', 'pathname')
 )
-def update_customer_dropdown(pathname):
+def update_customer_dropdown():
     session = Session()
     try:
         # Get customers from CustomerInfo table
@@ -1302,7 +1128,91 @@ def display_page(pathname):
     else:
         return home_layout()
 
+# **Combined Callback to Handle Both Inventory Updates and Filtering**
 
+@dash_app.callback(
+    Output('inventory-table', 'data'),
+    [
+        Input('inventory-table', 'data'),
+        Input('inventory-search', 'value')
+    ],
+    [
+        State('inventory-table', 'data_previous')
+    ]
+)
+def manage_inventory_table(table_data, search_value, data_previous):
+    ctx = callback_context
+    if not ctx.triggered:
+        raise PreventUpdate
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+
+    session = Session()
+    try:
+        if triggered_id == 'inventory-table':
+            # Handle Add Quantity updates
+            for new_row, old_row in zip(table_data, data_previous):
+                product_name = new_row['product_name']
+                add_quantity = new_row.get('add_quantity', '')
+
+                if add_quantity != old_row.get('add_quantity', '') and add_quantity != '':
+                    try:
+                        add_value = int(add_quantity)
+                        if add_value < 0:
+                            logger.warning(f"Negative add quantity for {product_name} ignored.")
+                            new_row['add_quantity'] = ''
+                            continue
+                    except ValueError:
+                        logger.warning(f"Invalid add quantity input for {product_name}: {add_quantity}")
+                        new_row['add_quantity'] = ''
+                        continue
+
+                    # Update the quantity in the database
+                    inventory_item = session.query(Inventory).filter_by(product_name=product_name).first()
+                    if inventory_item:
+                        inventory_item.quantity += add_value
+                        new_row['quantity'] = inventory_item.quantity
+                        new_row['add_quantity'] = ''  # Clear the add_quantity field
+
+                        # Publish the update to MQTT
+                        publish_to_mqtt('update', {
+                            'product_name': product_name,
+                            'quantity': inventory_item.quantity
+                        })
+                        logger.debug(f"Updated {product_name}: new quantity {inventory_item.quantity}")
+                    else:
+                        logger.warning(f"Product {product_name} not found in inventory.")
+                        new_row['add_quantity'] = ''
+
+            session.commit()  # Commit the session after processing all updates
+
+        # After handling updates, apply the search filter
+        if search_value:
+            # Fetch inventory items that match the search value
+            inventory_item = session.query(Inventory).filter_by(product_name=search_value).first()
+            if inventory_item:
+                filtered_data = [{
+                    "product_name": inventory_item.product_name,
+                    "quantity": inventory_item.quantity,
+                    "add_quantity": ''
+                }]
+                logger.debug(f"Filtered inventory data based on search: {filtered_data}")
+                return filtered_data
+            else:
+                logger.debug("No matching product found for the search.")
+                return []
+        else:
+            # If no search value, return all inventory
+            updated_inventory = get_inventory_from_db()
+            full_data = [{**item, 'add_quantity': ''} for item in updated_inventory]
+            logger.debug(f"Returning full inventory data: {full_data}")
+            return full_data
+
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Error managing inventory: {e}")
+        raise PreventUpdate
+    finally:
+        session.close()
 
 # Callback to add new order items dynamically
 @dash_app.callback(
